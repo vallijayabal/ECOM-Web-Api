@@ -1,0 +1,143 @@
+version: "3.9"
+
+services:
+  # ── FastAPI Application ──
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ecom-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      REDIS_HOST: redis
+      RABBITMQ_HOST: rabbitmq
+    volumes:
+      - .:/app
+      - ./uploads:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - ecom-network
+
+  # ── MySQL 8.0 ──
+  mysql:
+    image: mysql:8.0
+    container_name: ecom-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: slteam
+      MYSQL_DATABASE: ecom_db
+      MYSQL_USER: root
+      MYSQL_PASSWORD: slteam
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-psltteam"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - ecom-network
+
+  # ── Redis ──
+  redis:
+    image: redis:7-alpine
+    container_name: ecom-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - ecom-network
+
+  # ── RabbitMQ ──
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: ecom-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    restart: unless-stopped
+    networks:
+      - ecom-network
+
+  # ── Celery Worker ──
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ecom-celery-worker
+    command: celery -A app.core.celery_app worker --loglevel=info
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      DB_USER: root
+      DB_PASSWORD: slteam
+      DB_NAME: ecom_db
+      REDIS_HOST: redis
+      RABBITMQ_HOST: rabbitmq
+    volumes:
+      - .:/app
+    depends_on:
+      - app
+      - rabbitmq
+      - redis
+    restart: unless-stopped
+    networks:
+      - ecom-network
+
+  # ── Celery Beat (Scheduler) ──
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ecom-celery-beat
+    command: celery -A app.core.celery_app beat --loglevel=info
+    env_file:
+      - .env
+    environment:
+      DB_HOST: mysql
+      DB_USER: root
+      DB_PASSWORD: slteam
+      DB_NAME: ecom_db
+      REDIS_HOST: redis
+      RABBITMQ_HOST: rabbitmq
+    volumes:
+      - .:/app
+    depends_on:
+      - celery-worker
+    restart: unless-stopped
+    networks:
+      - ecom-network
+
+volumes:
+  mysql_data:
+  redis_data:
+  rabbitmq_data:
+
+networks:
+  ecom-network:
+    driver: bridge
